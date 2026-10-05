@@ -1,0 +1,378 @@
+# =============================================================================
+# Varnish-konfiguration för QGIS Server (genereras av start.sh).
+#
+# Filen är en MALL: texter som ser ut som ${NAMN} byts ut mot miljövariabler
+# (envsubst) varje gång containern startar. Ändra inställningar via
+# miljövariabler (se Dockerfile / README) – du behöver normalt inte röra den här filen.
+# =============================================================================
+vcl 4.1;
+
+import std;
+
+# -----------------------------------------------------------------------------
+# Backend = QGIS Server som körs i samma container (bara nåbar via 127.0.0.1).
+# -----------------------------------------------------------------------------
+backend qgis {
+    .host = "127.0.0.1";
+    .port = "${QGSRV_SERVER_HTTP_PORT}";
+    .connect_timeout = 2s;
+    # first_byte_timeout och between_bytes_timeout ska vara STÖRRE än
+    # QGSRV_SERVER_TIMEOUT, så att QGIS Server hinner avbryta själv först.
+    .first_byte_timeout = ${VARNISH_BACKEND_TIMEOUT}s;
+    .between_bytes_timeout = ${VARNISH_BACKEND_TIMEOUT}s;
+    # Bör vara minst (helst flera gånger) QGSRV_SERVER_WORKERS.
+    .max_connections = ${VARNISH_MAX_CONNECTIONS};
+    .probe = {
+        .request =
+            "GET ${VARNISH_PROBE_URL} HTTP/1.1"
+            "Host: localhost"
+            "Connection: close";
+        .interval = 10s;
+        .timeout = 5s;
+        .threshold = 2;
+        .window = 3;
+        .expected_response = 200;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Vilka klienter får rensa cachen (BAN)? Bara anrop som görs inifrån containern,
+# t.ex. med: docker exec <container> curl -X BAN ...
+# Se även VARNISH_BAN_HOST nedan.
+# -----------------------------------------------------------------------------
+acl ban_allowed {
+    "127.0.0.1";
+    "::1";
+}
+
+sub vcl_recv {
+    # -------------------------------------------------------------------------
+    # 1. Rensa cache (BAN)
+    #    curl -X BAN -H "X-Ban-Project: mittprojekt" http://localhost:8080/
+    #    curl -X BAN -H "X-Ban-Layer: mittlager"     http://localhost:8080/
+    # -------------------------------------------------------------------------
+    if (req.method == "BAN") {
+        if (!(client.ip ~ ban_allowed)
+            && !("${VARNISH_BAN_HOST}" != "" && req.http.host == "${VARNISH_BAN_HOST}")) {
+            return (synth(403, "Not allowed"));
+        }
+        if (req.http.X-Ban-Project) {
+            if (req.http.X-Ban-Project !~ "^[A-Za-z0-9_./%-]+$") {
+                return (synth(400, "Invalid project name"));
+            }
+            ban("obj.http.X-Qgis-Project == " + req.http.X-Ban-Project);
+            return (synth(200, "Banned project: " + req.http.X-Ban-Project));
+        }
+        if (req.http.X-Ban-Layer) {
+            if (req.http.X-Ban-Layer !~ "^[A-Za-z0-9_.:%-]+$") {
+                return (synth(400, "Invalid layer name"));
+            }
+            ban("obj.http.X-Qgis-Layers ~ ," + req.http.X-Ban-Layer + ",");
+            return (synth(200, "Banned layer: " + req.http.X-Ban-Layer));
+        }
+        return (synth(400, "Missing X-Ban-Project or X-Ban-Layer"));
+    }
+
+    # -------------------------------------------------------------------------
+    # 1b. Adminsida för att rensa cachen i webbläsaren: <prefix>/_admin
+    #     Är avstängd om inte VARNISH_ADMIN_USER och VARNISH_ADMIN_PASSWORD är satta.
+    # -------------------------------------------------------------------------
+    if ("${VARNISH_ADMIN_B64}" != "" && req.url ~ "^${VARNISH_URL_PREFIX}/_admin/?(\?|$)") {
+        if (req.http.Authorization != "Basic ${VARNISH_ADMIN_B64}") {
+            return (synth(401, "Authentication required"));
+        }
+        if (req.method !~ "^(GET|HEAD)$") {
+            return (synth(405, "Method not allowed"));
+        }
+        set req.http.X-Admin-Msg = "";
+        if (req.url ~ "[?&](project|layer)=") {
+            # Skydd mot CSRF: begäran måste komma från den här sidan (eller adressfältet).
+            # Webbläsare skickar Sec-Fetch-Site; för äldre webbläsare kontrolleras Referer.
+            if ((req.http.Sec-Fetch-Site && req.http.Sec-Fetch-Site !~ "^(same-origin|none)$")
+                || (!req.http.Sec-Fetch-Site
+                    && (!req.http.Referer || !req.http.Host
+                        || regsub(req.http.Referer, "^https?://([^/]+)(/.*)?$", "\1") != req.http.Host))) {
+                set req.http.X-Admin-Msg = "Begäran nekades: den kom inte från den här sidan.";
+                return (synth(403, "Forbidden"));
+            }
+            if (req.url ~ "[?&]project=[^&]") {
+                set req.http.X-Admin-Val = regsub(req.url, "^.*[?&]project=([^&]*).*$", "\1");
+                set req.http.X-Admin-Val = regsuball(req.http.X-Admin-Val, "\+", "%20");
+                set req.http.X-Admin-Val = regsuball(req.http.X-Admin-Val, "(?i)%2F", "/");
+                set req.http.X-Admin-Val = regsub(req.http.X-Admin-Val, "(?i)\.qg[sz]$", "");
+                # Tecken som formulär och kartklienter kodar olika (! ' ( ) ~) stöds inte,
+                # eftersom namnet då inte skulle matcha det som ligger i cachen.
+                if (req.http.X-Admin-Val ~ "^[A-Za-z0-9_./%-]+$" && req.http.X-Admin-Val !~ "(?i)%(21|27|28|29|7E)") {
+                    ban("obj.http.X-Qgis-Project == " + req.http.X-Admin-Val);
+                    set req.http.X-Admin-Msg = "Cachen är rensad för projektet: " + req.http.X-Admin-Val;
+                } else {
+                    set req.http.X-Admin-Msg = "Namnet innehåller tecken som inte stöds här (t.ex. parenteser eller citattecken).";
+                }
+            } else if (req.url ~ "[?&]layer=[^&]") {
+                set req.http.X-Admin-Val = regsub(req.url, "^.*[?&]layer=([^&]*).*$", "\1");
+                set req.http.X-Admin-Val = regsuball(req.http.X-Admin-Val, "\+", "%20");
+                if (req.http.X-Admin-Val ~ "^[A-Za-z0-9_.:%-]+$" && req.http.X-Admin-Val !~ "(?i)%(21|27|28|29|7E)") {
+                    ban("obj.http.X-Qgis-Layers ~ ," + req.http.X-Admin-Val + ",");
+                    set req.http.X-Admin-Msg = "Cachen är rensad för lagret: " + req.http.X-Admin-Val;
+                } else {
+                    set req.http.X-Admin-Msg = "Namnet innehåller tecken som inte stöds här (t.ex. parenteser eller citattecken). Rensa hela projektet i stället.";
+                }
+            } else {
+                set req.http.X-Admin-Msg = "Skriv ett namn först.";
+            }
+        }
+        return (synth(200, "OK"));
+    }
+
+    # -------------------------------------------------------------------------
+    # 2. Normalisera URL:en (görs bara första gången, inte vid restart)
+    # -------------------------------------------------------------------------
+    if (req.restarts == 0) {
+        # Klienten får inte själv styra TTL via en header; den sätts nedan från URL:en.
+        unset req.http.ttl;
+
+        # Ta bort cache-busting-parametrar (standard: "time") så att de inte
+        # ger separata cacheobjekt.
+        if (req.url ~ "[\?&](${VARNISH_STRIP_PARAMS})=[^&]*") {
+            set req.url = regsuball(req.url, "[\?&](${VARNISH_STRIP_PARAMS})=[^&]*", "");
+            # Om den första parametern togs bort börjar resten med & i stället för ?
+            if (req.url !~ "\?" && req.url ~ "&") {
+                set req.url = regsub(req.url, "&", "?");
+            }
+        }
+        if (req.url ~ "\?$") {
+            set req.url = regsub(req.url, "\?$", "");
+        }
+        # Sortera parametrarna så att samma anrop i olika ordning delar cache.
+        if (req.url ~ "\?.+&.+") {
+            set req.url = std.querysort(req.url);
+        }
+        # Ta bort avslutande snedstreck.
+        if (req.url ~ "^/(.+)/$") {
+            set req.url = regsub(req.url, "/$", "");
+        }
+
+        set req.backend_hint = qgis;
+
+        # ---------------------------------------------------------------------
+        # 3. Publik adress – används av QGIS Server för länkarna i GetCapabilities
+        # ---------------------------------------------------------------------
+        if (!req.http.X-Forwarded-Host) {
+            set req.http.X-Forwarded-Host = req.http.Host;
+        }
+        if (!req.http.X-Forwarded-Proto) {
+            set req.http.X-Forwarded-Proto = "http";
+        }
+        # Sätt VARNISH_FORCE_HTTPS=yes om en proxy framför (t.ex. Traefik)
+        # sköter https men inte skickar vidare X-Forwarded-Proto.
+        if ("${VARNISH_FORCE_HTTPS}" == "yes") {
+            set req.http.X-Forwarded-Proto = "https";
+        }
+        if (req.http.X-Forwarded-Port
+            && req.http.X-Forwarded-Port != "80"
+            && req.http.X-Forwarded-Port != "443"
+            && req.http.X-Forwarded-Host !~ ":[0-9]+$") {
+            set req.http.X-Qgis-Service-Url = req.http.X-Forwarded-Proto + "://" + req.http.X-Forwarded-Host + ":" + req.http.X-Forwarded-Port + regsub(req.url, "\?.*$", "");
+        } else {
+            set req.http.X-Qgis-Service-Url = req.http.X-Forwarded-Proto + "://" + req.http.X-Forwarded-Host + regsub(req.url, "\?.*$", "");
+        }
+
+        # ---------------------------------------------------------------------
+        # 4. Cache-tid via parametern ttl (sekunder, högst 90000). ttl=0 = ingen cache.
+        #    Utan ttl används VARNISH_DEFAULT_TTL.
+        # ---------------------------------------------------------------------
+        if (req.url ~ "[&?]ttl=([0-9]+)") {
+            set req.http.ttl = regsub(req.url, ".*[&?]ttl=([0-9]+).*", "\1");
+            if (std.integer(req.http.ttl, 0) > 90000) {
+                set req.http.ttl = "90000";
+            }
+        }
+
+        # ---------------------------------------------------------------------
+        # 5. Snygga webbadresser: <prefix>/ows/<projekt>?...  ->  /ows/?map=<projekt>.<filändelse>&...
+        #    (Vanliga adresser, /ows/?map=<projekt>.qgs&..., fungerar som vanligt.)
+        # ---------------------------------------------------------------------
+        if (req.url ~ "\?") {
+            set req.url = regsub(req.url, "^${VARNISH_URL_PREFIX}/ows/([^?]+)\?(.*)", "/ows/?map=\1.${VARNISH_PROJECT_EXTENSION}&\2");
+        } else {
+            set req.url = regsub(req.url, "^${VARNISH_URL_PREFIX}/ows/([^?]+)", "/ows/?map=\1.${VARNISH_PROJECT_EXTENSION}");
+        }
+    }
+
+    # -------------------------------------------------------------------------
+    # 6. Vad får cachas?
+    # -------------------------------------------------------------------------
+    if (req.http.ttl == "0" || req.method !~ "^(GET|HEAD)$") {
+        return (pass);
+    }
+    if (req.url ~ "(?i)REQUEST=(${VARNISH_CACHE_REQUESTS})") {
+        return (hash);
+    }
+    if (req.url ~ "(?i)REQUEST=GetCapabilities") {
+        set req.http.ttl = "60";
+        return (hash);
+    }
+    return (pass);
+}
+
+sub vcl_hash {
+    # Cache-nyckeln är bara URL:en, så att anrop från olika värdnamn delar cache.
+    # GetCapabilities är undantaget eftersom svaret innehåller den publika adressen.
+    hash_data(req.url);
+    if (req.url ~ "(?i)REQUEST=GetCapabilities") {
+        hash_data(req.http.X-Qgis-Service-Url);
+    }
+    return (lookup);
+}
+
+sub vcl_backend_fetch {
+    # Ta bort ttl-parametern innan anropet går till QGIS Server.
+    if (bereq.url ~ "[\?&]ttl=[0-9]+") {
+        set bereq.url = regsuball(bereq.url, "([\?&])ttl=[0-9]+&?", "\1");
+        set bereq.url = regsub(bereq.url, "[\?&]$", "");
+    }
+    set bereq.http.X-Rewrite-Url = bereq.url;
+}
+
+sub vcl_backend_response {
+    set beresp.http.X-Qgis-Service-Url = bereq.http.X-Qgis-Service-Url;
+    set beresp.http.X-Rewrite-Url = bereq.http.X-Rewrite-Url;
+
+    # Överbelastad/otillgänglig backend: försök igen (max VARNISH_MAX_RETRIES gånger).
+    if (beresp.status == 503 || beresp.status == 504) {
+        return (retry);
+    }
+    # 422 = fel i anropet, cacha inte.
+    if (beresp.status == 422) {
+        set beresp.uncacheable = true;
+        return (deliver);
+    }
+
+    if (beresp.status == 200) {
+        if (bereq.http.ttl) {
+            set beresp.ttl = std.duration(bereq.http.ttl + "s", 60s);
+            # Webbläsaren cachar högst 60 s; Varnish (s-maxage) cachar ttl sekunder.
+            if (std.integer(bereq.http.ttl, 60) < 60) {
+                set beresp.http.Cache-Control = "public, max-age=" + bereq.http.ttl + ", s-maxage=" + bereq.http.ttl + ", must-revalidate";
+            } else {
+                set beresp.http.Cache-Control = "public, max-age=60, s-maxage=" + bereq.http.ttl + ", must-revalidate";
+            }
+        } else {
+            set beresp.ttl = ${VARNISH_DEFAULT_TTL}s;
+            set beresp.http.Cache-Control = "public, max-age=60, s-maxage=${VARNISH_DEFAULT_TTL}, must-revalidate";
+        }
+        # Grace = hur länge ett utgånget objekt får levereras medan ett nytt hämtas.
+        # Keep = hur länge det sparas för villkorliga anrop (7 dygn).
+        set beresp.grace = beresp.ttl * 2;
+        set beresp.keep = 604800s;
+
+        # QGIS Server komprimerar inte svaren, så det gör Varnish.
+        if (beresp.http.Content-Type ~ "(?i)(xml|text|json|javascript)") {
+            set beresp.do_gzip = true;
+            if (beresp.http.Vary) {
+                if (!(beresp.http.Vary ~ "(?i)(^|,\s*)Accept-Encoding(\s*,|$)")) {
+                    set beresp.http.Vary = beresp.http.Vary + ", Accept-Encoding";
+                }
+            } else {
+                set beresp.http.Vary = "Accept-Encoding";
+            }
+        }
+    } else {
+        set beresp.uncacheable = true;
+        set beresp.ttl = 10s;
+    }
+
+    # Märk objektet med projekt och lager, så att de kan rensas med BAN.
+    if (bereq.url ~ "map=([^&]+)\.qg[sz]") {
+        set beresp.http.X-Qgis-Project = regsub(bereq.url, ".*map=([^&]+)\.qg[sz].*", "\1");
+    }
+    if (bereq.url ~ "(?i)[?&]LAYERS=([^&]*)") {
+        set beresp.http.X-Qgis-Layers = "," + regsub(bereq.url, "(?i).*[?&]LAYERS=([^&]*).*", "\1") + ",";
+    }
+
+    # QGIS Server skickar Last-Modified = projektfilens ändringstid, vilket inte
+    # säger något om datans ändringstid. Vi ersätter det med hämtningstidpunkten
+    # och svarar själva på villkorliga anrop (304) i vcl_deliver.
+    unset beresp.http.Last-Modified;
+    set beresp.http.Last-Modified = now;
+    return (deliver);
+}
+
+sub vcl_backend_error {
+    if (beresp.status == 503 || beresp.status == 504) {
+        return (retry);
+    }
+    # Se till att misslyckade anrop aldrig cachas.
+    set beresp.ttl = 0s;
+    set beresp.grace = 0s;
+    set beresp.keep = 0s;
+    set beresp.uncacheable = true;
+    return (deliver);
+}
+
+sub vcl_deliver {
+    if (resp.status == 200 && req.http.If-Modified-Since && resp.http.Last-Modified
+        && req.http.If-Modified-Since ~ "^[A-Za-z]{3}, [0-9]{2} [A-Za-z]{3} [0-9]{4} ") {
+        if (std.time(req.http.If-Modified-Since, now) >= std.time(resp.http.Last-Modified, now)) {
+            return (synth(304, "Not Modified"));
+        }
+    }
+    # Försök en gång till vid 503/504. Måste vara lika med max_restarts (VARNISH_MAX_RESTARTS),
+    # annars hamnar man på Varnish felsida "Guru Meditation".
+    if ((resp.status == 503 || resp.status == 504) && req.restarts < ${VARNISH_MAX_RESTARTS}) {
+        return (restart);
+    }
+    unset resp.http.X-Qgis-Service-Url;
+    unset resp.http.X-Rewrite-Url;
+    return (deliver);
+}
+
+sub vcl_synth {
+    # Adminsidan (anropas bara när den är påslagen, se vcl_recv).
+    if ("${VARNISH_ADMIN_B64}" != "" && req.url ~ "^${VARNISH_URL_PREFIX}/_admin/?(\?|$)") {
+        set resp.http.Content-Type = "text/html; charset=utf-8";
+        set resp.http.Cache-Control = "no-store";
+        set resp.http.X-Frame-Options = "DENY";
+        set resp.http.Content-Security-Policy = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'";
+        if (resp.status == 401) {
+            set resp.http.WWW-Authenticate = {"Basic realm="Rensa cache""};
+            synthetic({"<!doctype html><meta charset='utf-8'><title>Inloggning krävs</title><p>Inloggning krävs.</p>"});
+            return (deliver);
+        }
+        if (resp.status == 405) {
+            set req.http.X-Admin-Msg = "Metoden stöds inte.";
+        }
+        synthetic({"<!doctype html>
+<html lang='sv'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>Rensa cache</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:38rem;margin:2rem auto;padding:0 1rem;color:#222}
+h1{font-size:1.5rem} h2{font-size:1.1rem;margin-top:2rem}
+form{margin:.5rem 0 1rem} input{padding:.4rem;width:60%;font:inherit} button{padding:.4rem .8rem;font:inherit}
+.msg{background:#eef6ee;border:1px solid #9c9;padding:.6rem 1rem;border-radius:4px;word-break:break-all}
+.msg:empty{display:none} .small{color:#555;font-size:.9rem}
+</style></head><body>
+<h1>Rensa cache</h1>
+<div class='msg'>"} + req.http.X-Admin-Msg + {"</div>
+<h2>Ett projekt</h2>
+<form method='get' action=''>
+<input name='project' placeholder='mittprojekt' autocomplete='off' required>
+<button>Rensa projekt</button></form>
+<p class='small'>Projektets namn utan .qgs/.qgz, med eventuell undermapp (t.ex. mapp/mittprojekt).</p>
+<h2>Ett lager</h2>
+<form method='get' action=''>
+<input name='layer' placeholder='mittlager' autocomplete='off' required>
+<button>Rensa lager</button></form>
+<p class='small'>Lagrets namn så som kartklienten skickar det i LAYERS-parametern. Rensar lagret i alla projekt.
+Versaler och gemener spelar roll. Går det inte att rensa lagret, rensa hela projektet i stället.</p>
+</body></html>"});
+        return (deliver);
+    }
+
+    if (resp.status == 304) {
+        unset resp.http.Content-Type;
+        synthetic("");
+        return (deliver);
+    }
+}
