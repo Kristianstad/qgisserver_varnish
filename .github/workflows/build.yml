@@ -1,0 +1,172 @@
+# Bygger avbilden, testar att den startar och publicerar den på ghcr.io.
+#
+#   Pull request          -> bygger och testar (publicerar inte)
+#   Push till main        -> bygger, testar och publicerar  :latest, :<QGIS-version>, :sha-<commit>
+#   Git-tagg (t.ex. 3.44.14-r1) -> bygger, testar och publicerar  :<taggen>
+#   Manuellt (Actions-fliken)   -> som push till main; valfri QGIS-version kan anges
+name: Bygg avbild
+
+on:
+  push:
+    branches: [main]
+    tags: ['*']
+    paths-ignore:
+      - README.md
+      - docker-compose.yml
+  pull_request:
+    paths-ignore:
+      - README.md
+      - docker-compose.yml
+  workflow_dispatch:
+    inputs:
+      qgis_version:
+        description: 'QGIS Server-version (t.ex. 3.44.15). Tomt = den som står i Dockerfile.'
+        required: false
+        default: ''
+
+# Två körningar för samma gren/PR samtidigt: avbryt den äldre (bara för pull requests).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read      # hämta koden
+      packages: write     # publicera på ghcr.io
+
+    steps:
+      - name: Hämta koden
+        uses: actions/checkout@v6
+
+      # QGIS-versionen står som ARG överst i Dockerfile och används även som avbildens versionstagg.
+      - name: Ta reda på QGIS-version
+        id: qgis
+        env:
+          INPUT_VERSION: ${{ inputs.qgis_version }}
+        run: |
+          version="${INPUT_VERSION}"
+          if [ -z "$version" ]; then
+            version="$(sed -n 's/^ARG QGIS_SERVER_VERSION=//p' Dockerfile | head -n 1)"
+          fi
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Ogiltig QGIS-version: '$version' (förväntade t.ex. 3.44.14)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "QGIS Server-version: $version"
+
+      - name: Förbered Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Skapa taggar och etiketter
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.qgis.outputs.version }},enable={{is_default_branch}}
+            type=sha
+            type=ref,event=tag
+          # Avbilden innehåller mer än våra egna filer (QGIS, Varnish, Ubuntu-paket m.m.).
+          # Därför anger vi inte BSD-2-Clause som licens för hela avbilden.
+          labels: |
+            org.opencontainers.image.licenses=NOASSERTION
+
+      # Steg 1: bygg för att kunna testa (laddas in i den lokala Docker-motorn, publiceras inte).
+      - name: Bygg avbilden för test
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: qgis-varnish:test
+          build-args: |
+            QGIS_SERVER_VERSION=${{ steps.qgis.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Röktest - starta containern
+        run: |
+          # Tom projektmapp som QGIS Server-användaren (uid 9001) får läsa.
+          mkdir -p smoke-data && chmod 777 smoke-data
+          docker run -d --name smoke \
+            -v "$PWD/smoke-data:/qgis-data:ro" \
+            -e VARNISH_ADMIN_USER=admin \
+            -e VARNISH_ADMIN_PASSWORD=testlosenord123 \
+            qgis-varnish:test
+
+          ok=0
+          for i in $(seq 1 60); do
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke)" != "true" ]; then
+              echo "::error::Containern avslutades under starten"
+              exit 1
+            fi
+            if docker exec smoke curl -fs -o /dev/null http://127.0.0.1:8080/ping; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::Containern svarade inte på /ping inom 2 minuter"
+            exit 1
+          fi
+          echo "Containern svarar på /ping"
+
+      - name: Röktest - kontrollera funktionerna
+        run: |
+          set -e
+          code() { docker exec smoke curl -s -o /dev/null -w '%{http_code}' "$@"; }
+
+          echo "Varnish: $(docker exec smoke varnishd -V 2>&1 | head -n 1)"
+
+          [ "$(code -X BAN -H 'X-Ban-Project: test' http://127.0.0.1:8080/)" = "200" ] \
+            || { echo "::error::BAN av projekt fungerar inte"; exit 1; }
+          [ "$(code -X BAN -H 'X-Ban-Layer: test' http://127.0.0.1:8080/)" = "200" ] \
+            || { echo "::error::BAN av lager fungerar inte"; exit 1; }
+          [ "$(code http://127.0.0.1:8080/_admin)" = "401" ] \
+            || { echo "::error::Adminsidan kräver inte inloggning"; exit 1; }
+          [ "$(code -u admin:testlosenord123 http://127.0.0.1:8080/_admin)" = "200" ] \
+            || { echo "::error::Adminsidan går inte att logga in på"; exit 1; }
+          docker exec smoke test -f /usr/share/doc/qgis-varnish/LICENSE \
+            || { echo "::error::LICENSE saknas i avbilden"; exit 1; }
+          echo "Alla röktester godkända"
+
+      - name: Visa containerns logg
+        if: always()
+        run: |
+          docker logs smoke 2>&1 | tail -n 100 || true
+          docker rm -f smoke >/dev/null 2>&1 || true
+
+      # Steg 2: publicera (bara vid push, tagg eller manuell körning - aldrig för pull requests).
+      # Bygget använder cachen från steg 1, så det går snabbt.
+      - name: Logga in på ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bygg och publicera
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            QGIS_SERVER_VERSION=${{ steps.qgis.outputs.version }}
+          cache-from: type=gha
+          # Provenance/SBOM-attestering av: ger en enkel avbild utan extra manifest
+          # (kompatibelt med Docker Swarm och äldre verktyg).
+          provenance: false
