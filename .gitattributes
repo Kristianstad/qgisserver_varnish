@@ -1,0 +1,9 @@
+# Se till att skript och konfiguration alltid har Unix-radslut (LF), även om filerna
+# redigeras på Windows. Annars kan start.sh sluta fungera i containern.
+* text=auto
+*.sh text eol=lf
+*.template text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+LICENSE text eol=lf
