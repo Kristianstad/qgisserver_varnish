@@ -123,6 +123,8 @@ påslaget i datorns BIOS/UEFI (heter ofta *Intel VT-x*, *AMD-V* eller *SVM Mode*
    ```powershell
    wsl --update
    ```
+
+   **Starta om datorn igen efter uppdateringen.** Annars hittas kommandot `wslc` ofta inte, även i ett nytt PowerShell-fönster.
 5. Kontrollera att allt fungerar:
 
    ```powershell
@@ -198,7 +200,7 @@ Starta sedan din egen avbild med samma `wslc run`-kommando som ovan, men med `qg
 ### Felsökning på Windows
 
 - **`wsl --install` klagar på virtualisering:** slå på virtualisering i BIOS/UEFI (se ovan) och försök igen.
-- **`wslc` hittas inte:** kör `wsl --update`, stäng PowerShell och öppna ett nytt fönster, och kontrollera att `wsl --version` visar 2.9.3 eller högre.
+- **`wslc` hittas inte:** kör `wsl --update` och **starta om datorn** (ett nytt PowerShell-fönster räcker inte alltid). Kontrollera sedan att `wsl --version` visar 2.9.3 eller högre.
 - **Containern stannar direkt eller projekten hittas inte:** läs `wslc container logs kartor`. Kontrollera att sökvägen efter `-v` stämmer och att projektmappen finns.
 - Microsofts guide: <https://learn.microsoft.com/en-us/windows/wsl/tutorials/wsl-containers>
 
