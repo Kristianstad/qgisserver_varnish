@@ -1,9 +1,11 @@
-# Exempel för att komma igång:   docker compose up --build
+# Exempel för att komma igång:   docker compose up -d
 # Kartorna nås sedan på http://localhost:8080
 services:
   qgis:
-    build: .
-    image: qgis-varnish:3.44.14
+    image: ghcr.io/kristianstad/qgisserver_varnish:latest
+    # Vill du bygga avbilden själv i stället? Ta bort raden "image:" ovan, ta bort # framför raden
+    # nedan och kör "docker compose up --build".
+    # build: .
     ports:
       - "8080:8080"             # värdens port : Varnish i containern
       # - "127.0.0.1:8080:8080" # använd i stället för raden ovan om bara den egna datorn ska nå tjänsten
