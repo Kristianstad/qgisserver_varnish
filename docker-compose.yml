@@ -1,0 +1,22 @@
+# Exempel för att komma igång:   docker compose up --build
+# Kartorna nås sedan på http://localhost:8080
+services:
+  qgis:
+    build: .
+    image: qgis-varnish:3.44.14
+    ports:
+      - "8080:8080"             # värdens port : Varnish i containern
+      # - "127.0.0.1:8080:8080" # använd i stället för raden ovan om bara den egna datorn ska nå tjänsten
+    volumes:
+      - ./projekt:/qgis-data    # mappen "projekt" (bredvid den här filen) innehåller dina QGIS-projekt
+    environment:
+      QGSRV_SERVER_WORKERS: "2"          # antal QGIS-processer, gärna = antal CPU-kärnor
+      VARNISH_CACHE_SIZE: "256m"         # cachens storlek i RAM
+      # VARNISH_DEFAULT_TTL: "60"        # sekunder som svar cachas (om anropet saknar ttl=...)
+      # VARNISH_URL_PREFIX: "/kartor"    # om kartorna nås via t.ex. https://example.se/kartor/ows/<projekt>
+      # VARNISH_FORCE_HTTPS: "yes"       # om en proxy framför hanterar https
+      # VARNISH_ADMIN_USER: "admin"      # slår på adminsidan http://localhost:8080/_admin för att rensa cachen
+      # VARNISH_ADMIN_PASSWORD: "byt-till-ett-langt-losenord"
+    ulimits:
+      memlock: -1               # valfritt: tar bort varningar från Varnish om låst minne
+    restart: unless-stopped
