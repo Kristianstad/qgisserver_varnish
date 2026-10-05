@@ -89,7 +89,7 @@ påslaget i datorns BIOS/UEFI (heter ofta *Intel VT-x*, *AMD-V* eller *SVM Mode*
 
 ### 2. Bygg avbilden
 
-Lägg filerna från det här paketet i en mapp, t.ex. `C:\kartor\qgis-varnish`, och kör:
+Hämta filerna från det här repot (*Code* → *Download ZIP*, eller `git clone`) och lägg dem i en mapp, t.ex. `C:\kartor\qgis-varnish`. Kör sedan:
 
 ```powershell
 cd C:\kartor\qgis-varnish
