@@ -8,6 +8,9 @@ GetCapabilities, så att QGIS Server slipper rita samma bild om och om igen.
 webbläsare ──► Varnish (port 8080, cache) ──► QGIS Server (bara inuti containern)
 ```
 
+**Du behöver inte bygga något själv.** Färdigbyggda avbilder finns på GitHub Container Registry
+(`ghcr.io`) och hämtas automatiskt första gången du kör dem, se [Kom igång](#kom-igång).
+
 Två program i en container är inte "typiskt Docker", men gör avbilden enkel att
 använda: det finns bara en sak att starta. Om något av programmen slutar fungera
 avslutas hela containern, så att Docker kan starta om den.
@@ -19,25 +22,28 @@ avslutas hela containern, så att Docker kan starta om den.
 | `Dockerfile` | Bygger avbilden. Här står alla inställningar (`ENV`) med förklaringar. |
 | `default.vcl.template` | Varnish-konfigurationen (mall). |
 | `start.sh` | Startar QGIS Server och Varnish och håller koll på dem. |
+| `.github/workflows/build.yml` | GitHub Actions: bygger, testar och publicerar den färdiga avbilden. |
+| `.gitattributes` | Ser till att skripten alltid har Unix-radslut (LF). |
 | `LICENSE` | Licens (BSD 2-Clause) för filerna i det här repot. |
-| `docker-compose.yml` | Färdigt exempel för att köra avbilden med Docker (fungerar inte med `wslc`, se avsnittet om Windows). |
+| `docker-compose.yml` | Färdigt exempel för att köra den färdigbyggda avbilden med Docker (fungerar inte med `wslc`, se avsnittet om Windows). |
 
 ## Kom igång
 
 > Kör du Windows utan Docker Desktop? Gå till [Köra på Windows med WSL](#köra-på-windows-med-wsl).
 
+Det finns en färdigbyggd avbild, så det räcker att starta den. Docker hämtar den automatiskt första gången.
+
 1. Lägg dina QGIS-projekt i en mapp, t.ex. `projekt/` (filen `projekt/mittprojekt.qgs`).
-2. Bygg och starta:
+2. Starta:
 
 ```bash
-docker compose up --build
+docker run -d --name kartor -p 8080:8080 -v "$PWD/projekt:/qgis-data" ghcr.io/kristianstad/qgisserver_varnish:latest
 ```
 
-Eller utan compose:
+Eller med compose (hämta `docker-compose.yml` från det här repot och lägg den bredvid mappen `projekt`):
 
 ```bash
-docker build -t qgis-varnish .
-docker run -d --name kartor -p 8080:8080 -v "$PWD/projekt:/qgis-data" qgis-varnish
+docker compose up -d
 ```
 
 3. Testa i webbläsaren (byt ut `mittprojekt` mot ditt projektnamn):
@@ -51,6 +57,46 @@ du att det går snabbare – då kommer svaret från cachen.
 
 > Dina QGIS-projekt måste vara läsbara för användaren med id 9001 (den QGIS Server körs som).
 > Kör inte containern med `--user`.
+
+## Färdigbyggd avbild
+
+Avbilden `ghcr.io/kristianstad/qgisserver_varnish` byggs och testas automatiskt av GitHub Actions
+vid varje ändring av koden och är öppen att hämta utan inloggning. Alla versioner finns på
+[paketsidan](https://github.com/Kristianstad/qgisserver_varnish/pkgs/container/qgisserver_varnish).
+
+| Tagg | Betydelse |
+|---|---|
+| `latest` | Senaste bygget. Bra för att prova. |
+| `3.44.14` (och andra versionsnummer) | Senaste bygget som bygger på just den versionen av QGIS Server. Använd en sådan tagg i drift, så att du själv väljer när du byter QGIS-version. |
+| `sha-<kod>` | Ett exakt bygge som aldrig ändras. Taggarna finns på paketsidan. |
+
+Exempel: `docker run ... ghcr.io/kristianstad/qgisserver_varnish:3.44.14`
+
+**Uppdatera till senaste bygget** (projekten ligger kvar, eftersom de ligger i din egen mapp):
+
+```bash
+docker pull ghcr.io/kristianstad/qgisserver_varnish:latest
+docker rm -f kartor
+docker run -d --name kartor ...   # samma kommando som förut
+```
+
+Med compose: `docker compose pull && docker compose up -d`
+
+**Bra att veta:**
+
+- Avbilden byggs bara för `amd64` (vanliga Intel/AMD-datorer). På ARM, t.ex. Mac med M-chip, kan den köras via emulering i Docker Desktop, men det kan bli långsamt.
+- Vill du ändra något i avbilden eller bygga den själv, se nedan.
+
+### Bygga avbilden själv (valfritt)
+
+Hämta filerna från det här repot (*Code* → *Download ZIP*, eller `git clone`) och kör i mappen:
+
+```bash
+docker build -t qgis-varnish .
+docker run -d --name kartor -p 8080:8080 -v "$PWD/projekt:/qgis-data" qgis-varnish
+```
+
+Med compose: ta bort raden `image:` i `docker-compose.yml`, ta bort `#` framför `build: .` och kör `docker compose up --build`.
 
 ## Köra på Windows med WSL
 
@@ -87,26 +133,16 @@ påslaget i datorns BIOS/UEFI (heter ofta *Intel VT-x*, *AMD-V* eller *SVM Mode*
 
    Den sista raden hämtar en liten testavbild och ska skriva ut ett "Hello"-meddelande.
 
-### 2. Bygg avbilden
+### 2. Starta containern
 
-Hämta filerna från det här repot (*Code* → *Download ZIP*, eller `git clone`) och lägg dem i en mapp, t.ex. `C:\kartor\qgis-varnish`. Kör sedan:
-
-```powershell
-cd C:\kartor\qgis-varnish
-wslc build -t qgis-varnish .
-```
-
-Första bygget tar några minuter eftersom basavbilden är stor. Kontrollera resultatet med `wslc image list`.
-Om `wslc` säger att den inte hittar någon `Containerfile` (det är WSL:s namn för Dockerfile), ange filen själv:
-`wslc build -f Dockerfile -t qgis-varnish .`
-
-### 3. Starta containern
-
-Lägg dina QGIS-projekt i en mapp, t.ex. `C:\kartor\projekt`, och starta:
+Lägg dina QGIS-projekt i en mapp, t.ex. `C:\kartor\projekt`, och starta den färdigbyggda avbilden:
 
 ```powershell
-wslc run -d --rm --name kartor -p 8080:8080 -v "C:\kartor\projekt:/qgis-data" qgis-varnish
+wslc run -d --rm --name kartor -p 8080:8080 -v "C:\kartor\projekt:/qgis-data" ghcr.io/kristianstad/qgisserver_varnish:latest
 ```
+
+Avbilden hämtas automatiskt första gången (några hundra MB), så första starten tar en stund.
+Du behöver inte bygga något själv. Se [Färdigbyggd avbild](#färdigbyggd-avbild) för vilka taggar som finns.
 
 | Del | Betydelse |
 |---|---|
@@ -124,7 +160,7 @@ Testa sedan i webbläsaren: `http://localhost:8080/ping` ska svara `{"status": "
 > `docker-compose.yml` går inte att använda med `wslc`, eftersom Compose-stöd ännu saknas i WSL-containrar.
 > Använd kommandona ovan, eller Docker Desktop om du vill använda compose.
 
-### 4. Vardagskommandon
+### 3. Vardagskommandon
 
 | Vad du vill göra | Docker | WSL (`wslc`) |
 |---|---|---|
@@ -142,7 +178,22 @@ för att rensa cachen:
 wslc exec kartor curl -X BAN -H "X-Ban-Project: mittprojekt" http://localhost:8080/
 ```
 
-Ska du ändra något (nya inställningar eller en ny version av avbilden): stoppa containern och kör `wslc run ...` igen.
+Ska du ändra något (nya inställningar): stoppa containern och kör `wslc run ...` igen. Vill du byta till en nyare avbild, ange en ny tagg i `wslc run` (t.ex. en ny QGIS-version eller en `sha-...`-tagg från [paketsidan](https://github.com/Kristianstad/qgisserver_varnish/pkgs/container/qgisserver_varnish)); en tagg du inte har sedan tidigare hämtas alltid.
+
+### Bygga avbilden själv med wslc (valfritt)
+
+Bara om du vill ändra något i avbilden. Hämta filerna från det här repot (*Code* → *Download ZIP*, eller `git clone`) och lägg dem i en mapp, t.ex. `C:\kartor\qgis-varnish`. Kör sedan:
+
+```powershell
+cd C:\kartor\qgis-varnish
+wslc build -t qgis-varnish .
+```
+
+Första bygget tar några minuter eftersom basavbilden är stor. Kontrollera resultatet med `wslc image list`.
+Om `wslc` säger att den inte hittar någon `Containerfile` (det är WSL:s namn för Dockerfile), ange filen själv:
+`wslc build -f Dockerfile -t qgis-varnish .`
+
+Starta sedan din egen avbild med samma `wslc run`-kommando som ovan, men med `qgis-varnish` i stället för `ghcr.io/kristianstad/qgisserver_varnish:latest`.
 
 ### Felsökning på Windows
 
@@ -181,7 +232,7 @@ Sidan är **avstängd** tills du anger användare och lösenord (minst 8 tecken)
 
 ```bash
 docker run -d --name kartor -p 8080:8080 -v "$PWD/projekt:/qgis-data" \
-    -e VARNISH_ADMIN_USER=admin -e VARNISH_ADMIN_PASSWORD='byt-till-ett-langt-losenord' qgis-varnish
+    -e VARNISH_ADMIN_USER=admin -e VARNISH_ADMIN_PASSWORD='byt-till-ett-langt-losenord' ghcr.io/kristianstad/qgisserver_varnish:latest
 ```
 
 Öppna sedan `http://localhost:8080/_admin` och logga in. (Används `VARNISH_URL_PREFIX` ligger sidan på `<prefix>/_admin`.)
