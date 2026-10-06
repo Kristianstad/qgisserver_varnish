@@ -30,7 +30,7 @@ ENV VARNISH_PORT=8080 \
     VARNISH_DEFAULT_TTL=60 \
     # Hur länge (sekunder) Varnish väntar på QGIS Server. QGSRV_SERVER_TIMEOUT blir 1 sekund mindre.
     VARNISH_BACKEND_TIMEOUT=120 \
-    # Max antal samtidiga anrop till QGIS Server. Tomt = antal workers x 6.
+    # Max antal samtidiga anrop till QGIS Server. Tomt = antal workers x 10.
     VARNISH_MAX_CONNECTIONS="" \
     # Antal nya försök mot QGIS Server vid 503/504, samt antal omstarter av anropet.
     VARNISH_MAX_RETRIES=2 \
