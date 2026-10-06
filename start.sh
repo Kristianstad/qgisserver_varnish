@@ -26,7 +26,7 @@ done
 
 # Antal samtidiga anslutningar Varnish får göra mot QGIS Server.
 if [[ -z "${VARNISH_MAX_CONNECTIONS}" ]]; then
-    VARNISH_MAX_CONNECTIONS=$((QGSRV_SERVER_WORKERS * 6))
+    VARNISH_MAX_CONNECTIONS=$((QGSRV_SERVER_WORKERS * 10))
 fi
 [[ "${VARNISH_MAX_CONNECTIONS}" =~ ^[0-9]+$ ]] || die "VARNISH_MAX_CONNECTIONS måste vara ett heltal."
 
