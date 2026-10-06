@@ -263,7 +263,7 @@ Sätts med `-e NAMN=värde` (docker run) eller under `environment:` (compose).
 | `VARNISH_CACHE_SIZE` | `256m` | Cachens storlek i RAM (t.ex. `1g`). Låt containern få mer minne än så. |
 | `VARNISH_DEFAULT_TTL` | `60` | Sekunder ett svar cachas när anropet saknar `ttl`. |
 | `VARNISH_BACKEND_TIMEOUT` | `120` | Hur länge Varnish väntar på QGIS Server. `QGSRV_SERVER_TIMEOUT` blir 1 sekund mindre. |
-| `VARNISH_MAX_CONNECTIONS` | tomt | Max samtidiga anrop till QGIS Server. Tomt = `QGSRV_SERVER_WORKERS` × 6. |
+| `VARNISH_MAX_CONNECTIONS` | tomt | Max samtidiga anrop till QGIS Server. Tomt = `QGSRV_SERVER_WORKERS` × 10. |
 | `VARNISH_MAX_RETRIES` / `VARNISH_MAX_RESTARTS` | `2` / `1` | Antal nya försök vid 503/504. |
 | `VARNISH_CACHE_REQUESTS` | `GetMap\|GetLegendGraphic` | Vilka `REQUEST`-typer som cachas (t.ex. `GetMap\|GetLegendGraphic\|GetTile`). |
 | `VARNISH_STRIP_PARAMS` | `time` | Parametrar som tas bort före cachning (`\|`-separerade, tomt = inga). |
