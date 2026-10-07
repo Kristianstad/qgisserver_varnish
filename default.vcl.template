@@ -128,9 +128,6 @@ sub vcl_recv {
     # 2. Normalisera URL:en (görs bara första gången, inte vid restart)
     # -------------------------------------------------------------------------
     if (req.restarts == 0) {
-        # Klienten får inte själv styra TTL via en header; den sätts nedan från URL:en.
-        unset req.http.ttl;
-
         # Ta bort cache-busting-parametrar (standard: "time") så att de inte
         # ger separata cacheobjekt.
         if (req.url ~ "[\?&](${VARNISH_STRIP_PARAMS})=[^&]*") {
@@ -178,12 +175,27 @@ sub vcl_recv {
         }
 
         # ---------------------------------------------------------------------
-        # 4. Cache-tid via parametern ttl (sekunder, högst 90000). ttl=0 = ingen cache.
-        #    Utan ttl används VARNISH_DEFAULT_TTL.
+        # 4. Cache-tid via parametern ttl i URL:en ELLER headern "ttl" (sekunder,
+        #    högst 90000). ttl=0 = ingen cache. Utan ttl används VARNISH_DEFAULT_TTL.
+        #    Står ttl både i URL och header gäller URL:en.
+        #    Värdet flyttas till req.http.ttl och tas bort ur URL:en. Därmed ger
+        #    ttl=300 i URL:en och "ttl: 300" som header samma cache-nyckel (se vcl_hash),
+        #    och ttl skickas aldrig vidare till QGIS Server.
+        #    (Görs efter steg 3, så X-Qgis-Service-Url påverkas inte.)
         # ---------------------------------------------------------------------
-        if (req.url ~ "[&?]ttl=([0-9]+)") {
-            set req.http.ttl = regsub(req.url, ".*[&?]ttl=([0-9]+).*", "\1");
-            if (std.integer(req.http.ttl, 0) > 90000) {
+        if (req.url ~ "[&?]ttl=[0-9]+(?=&|$)") {
+            set req.http.ttl = regsub(req.url, ".*[&?]ttl=([0-9]+)(?=&|$).*", "\1");
+            set req.url = regsuball(req.url, "[\?&]ttl=[0-9]+(?=&|$)", "");
+            # Om den första parametern togs bort börjar resten med & i stället för ?
+            if (req.url !~ "\?" && req.url ~ "&") {
+                set req.url = regsub(req.url, "&", "?");
+            }
+        }
+        if (req.http.ttl) {
+            if (req.http.ttl !~ "^[0-9]+$") {
+                # Ogiltigt värde i headern: ignorera.
+                unset req.http.ttl;
+            } else if (req.http.ttl ~ "^[0-9]{6,}$" || std.integer(req.http.ttl, 0) > 90000) {
                 set req.http.ttl = "90000";
             }
         }
@@ -216,9 +228,15 @@ sub vcl_recv {
 }
 
 sub vcl_hash {
-    # Cache-nyckeln är bara URL:en, så att anrop från olika värdnamn delar cache.
+    # Cache-nyckeln är URL:en (och ttl), så att anrop från olika värdnamn delar cache.
     # GetCapabilities är undantaget eftersom svaret innehåller den publika adressen.
     hash_data(req.url);
+    # ttl (från URL eller header, se vcl_recv) styr hur länge objektet lever, så den måste
+    # ingå i nyckeln. Annars skulle ett anrop med en annan ttl kunna avgöra livslängden
+    # för andras svar.
+    if (req.http.ttl) {
+        hash_data(req.http.ttl);
+    }
     if (req.url ~ "(?i)REQUEST=GetCapabilities") {
         hash_data(req.http.X-Qgis-Service-Url);
     }
@@ -226,11 +244,6 @@ sub vcl_hash {
 }
 
 sub vcl_backend_fetch {
-    # Ta bort ttl-parametern innan anropet går till QGIS Server.
-    if (bereq.url ~ "[\?&]ttl=[0-9]+") {
-        set bereq.url = regsuball(bereq.url, "([\?&])ttl=[0-9]+&?", "\1");
-        set bereq.url = regsub(bereq.url, "[\?&]$", "");
-    }
     set bereq.http.X-Rewrite-Url = bereq.url;
 }
 
@@ -318,8 +331,9 @@ sub vcl_deliver {
         }
     }
     # Försök en gång till vid 503/504. Måste vara lika med max_restarts (VARNISH_MAX_RESTARTS),
-    # annars hamnar man på Varnish felsida "Guru Meditation".
-    if ((resp.status == 503 || resp.status == 504) && req.restarts < ${VARNISH_MAX_RESTARTS}) {
+    # annars hamnar man på Varnish felsida "Guru Meditation". Bara GET/HEAD (se vcl_synth).
+    if ((resp.status == 503 || resp.status == 504) && req.restarts < ${VARNISH_MAX_RESTARTS}
+        && req.method ~ "^(GET|HEAD)$") {
         return (restart);
     }
     unset resp.http.X-Qgis-Service-Url;
@@ -328,6 +342,18 @@ sub vcl_deliver {
 }
 
 sub vcl_synth {
+    # När alla försök mot backend misslyckats (503/504) skickar Varnish anropet hit,
+    # inte till vcl_deliver. Gör därför samma restart som i vcl_deliver. Villkoret
+    # måste vara lika med max_restarts (VARNISH_MAX_RESTARTS), annars hamnar man
+    # i "Too many restarts".
+    # Bara GET/HEAD startas om: en POST (t.ex. WFS-T) har redan skickat sin body, och Varnish
+    # kan inte skicka den igen. En restart skulle ge en POST med Content-Length men utan body,
+    # så anropet hänger tills backend eller Varnish ger upp.
+    if ((resp.status == 503 || resp.status == 504) && req.restarts < ${VARNISH_MAX_RESTARTS}
+        && req.method ~ "^(GET|HEAD)$") {
+        return (restart);
+    }
+
     # Adminsidan (anropas bara när den är påslagen, se vcl_recv).
     if ("${VARNISH_ADMIN_B64}" != "" && req.url ~ "^${VARNISH_URL_PREFIX}/_admin/?(\?|$)") {
         set resp.http.Content-Type = "text/html; charset=utf-8";
