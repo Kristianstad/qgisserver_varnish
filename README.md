@@ -209,6 +209,12 @@ Starta sedan din egen avbild med samma `wslc run`-kommando som ovan, men med `qg
 - Bara `GET`/`HEAD` av `REQUEST=GetMap`, `GetLegendGraphic` och `GetCapabilities` cachas. Allt annat går rakt igenom.
 - Ett svar cachas i `VARNISH_DEFAULT_TTL` sekunder (standard 60). Lägg till `&ttl=300` i
   webbadressen för att cacha 300 sekunder (högst 90000), eller `&ttl=0` för ingen cache alls.
+  Samma sak går att styra med headern `ttl: 300`. Står ttl i både URL och header gäller URL:en.
+  `ttl=300` i URL:en och `ttl: 300` som header delar cacheobjekt; olika ttl-värden ger olika objekt.
+  Parametern ttl skickas inte vidare till QGIS Server.
+- Svarar QGIS Server med 503/504 gör Varnish först `VARNISH_MAX_RETRIES` nya försök och därefter
+  `VARNISH_MAX_RESTARTS` omstarter av anropet. Omstart görs bara för `GET`/`HEAD`; ett misslyckat
+  `POST` (t.ex. WFS-T) ger direkt 503 och upprepas aldrig.
 - Parametern `time` tas bort före cachning (typisk "cache-busting"-parameter). Ändra med `VARNISH_STRIP_PARAMS`.
 - Parametrarnas ordning spelar ingen roll: samma anrop i annan ordning delar cache.
 - Snygga adresser: `/ows/<projekt>?...` skrivs om till `/ows/?map=<projekt>.qgs&...`
