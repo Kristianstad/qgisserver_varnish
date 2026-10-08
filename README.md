@@ -197,7 +197,39 @@ Om `wslc` säger att den inte hittar någon `Containerfile` (det är WSL:s namn 
 
 Starta sedan din egen avbild med samma `wslc run`-kommando som ovan, men med `qgis-varnish` i stället för `ghcr.io/kristianstad/qgisserver_varnish:latest`.
 
-### Felsökning på Windows
+### VARNISH_MAX_CONNECTIONS och kö mot QGIS Server
+
+Varnish skickar bara vidare ett visst antal anrop samtidigt till QGIS Server. Taket
+ställs in med `VARNISH_MAX_CONNECTIONS`.
+
+QGIS Server kan bara rita lika många bilder samtidigt som det finns workers
+(`QGSRV_SERVER_WORKERS`). Anrop utöver det väntar i en kö hos QGIS Server tills en
+worker blir ledig. `VARNISH_MAX_CONNECTIONS` avgör hur stor den kön får bli:
+
+- **Standard** är `QGSRV_SERVER_WORKERS` × 10. Med 4 workers blir det 40 samtidiga
+  anrop: 4 som ritas just nu och upp till 36 som väntar, alltså en kö på ungefär
+  10 anrop per worker.
+- **När taket är nått** köar Varnish inte längre. Nästa anrop får direkt felet
+  **503** (Varnish försöker först igen enligt `VARNISH_MAX_RETRIES`, men är det fortfarande fullt
+  så får användaren ett 503).
+- **För lågt värde** (nära antalet workers) ger alltså 503 redan vid måttliga
+  belastningstoppar. **För högt värde** ger långa köer: användare väntar länge, och
+  anrop kan hinna ge timeout (`VARNISH_BACKEND_TIMEOUT`) innan de ens börjar ritas. Då är det
+  ofta bättre att få ett snabbt 503 och försöka igen.
+- Cachade svar påverkas inte; de går aldrig till QGIS Server och räknas inte.
+
+Värdet kan skrivas som ett tal eller som ett uttryck med variabelnamn:
+
+```bash
+docker run ... -e VARNISH_MAX_CONNECTIONS=200 ...
+docker run ... -e 'VARNISH_MAX_CONNECTIONS=QGSRV_SERVER_WORKERS*20' ...
+```
+
+Skriv variabelnamnet **utan** `$` (med `$` fungerar det också, men då måste skalet inte
+expandera det – använd enkelcitat i `docker run`, och `$$` i en compose-fil). Citera uttrycket så att
+`*` inte tolkas av skalet. Tillåtna tecken: bokstäver, siffror, `_`, mellanslag, `+ - * / ( )`.
+
+## Felsökning på Windows
 
 - **`wsl --install` klagar på virtualisering:** slå på virtualisering i BIOS/UEFI (se ovan) och försök igen.
 - **`wslc` hittas inte:** kör `wsl --update` och **starta om datorn** (ett nytt PowerShell-fönster räcker inte alltid). Kontrollera sedan att `wsl --version` visar 2.9.3 eller högre.
