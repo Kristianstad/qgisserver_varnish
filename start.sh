@@ -19,20 +19,20 @@ die() { echo "[start] FEL: $*" >&2; exit 1; }
 
 # --- 1. Kontrollera inställningar ---------------------------------------------
 for v in VARNISH_PORT VARNISH_BACKEND_TIMEOUT VARNISH_DEFAULT_TTL \
-         VARNISH_MAX_RETRIES VARNISH_MAX_RESTARTS \
+         VARNISH_MAX_RETRIES VARNISH_MAX_RESTARTS VARNISH_RETRY_MAX_AGE \
          QGSRV_SERVER_HTTP_PORT QGSRV_SERVER_WORKERS; do
     [[ "${!v}" =~ ^[0-9]+$ ]] || die "$v måste vara ett heltal (är nu: '${!v}')."
 done
 
 # Antal samtidiga anslutningar Varnish får göra mot QGIS Server.
-# Tomt = QGSRV_SERVER_WORKERS * 10. Värdet får vara ett heltal eller ett enkelt
-# uttryck med variabelnamn, t.ex. QGSRV_SERVER_WORKERS*20 (tecknen $ { } ignoreras).
+# Tomt = QGSRV_SERVER_WORKERS * 20. Värdet får vara ett heltal eller ett enkelt
+# uttryck med variabelnamn, t.ex. QGSRV_SERVER_WORKERS*30 (tecknen $ { } ignoreras).
 if [[ -z "${VARNISH_MAX_CONNECTIONS}" ]]; then
-    VARNISH_MAX_CONNECTIONS="QGSRV_SERVER_WORKERS*10"
+    VARNISH_MAX_CONNECTIONS="QGSRV_SERVER_WORKERS*20"
 fi
 expr_text="${VARNISH_MAX_CONNECTIONS//[\$\{\}]/}"
 [[ "$expr_text" =~ ^[A-Za-z_0-9\ *+/()-]+$ ]] \
-    || die "VARNISH_MAX_CONNECTIONS får bara vara ett heltal eller ett uttryck som QGSRV_SERVER_WORKERS*20 (är nu: '${VARNISH_MAX_CONNECTIONS}')."
+    || die "VARNISH_MAX_CONNECTIONS får bara vara ett heltal eller ett uttryck som QGSRV_SERVER_WORKERS*30 (är nu: '${VARNISH_MAX_CONNECTIONS}')."
 max_conn=$( (echo $(( ${expr_text} ))) 2>/dev/null ) \
     || die "Kunde inte räkna ut VARNISH_MAX_CONNECTIONS='${VARNISH_MAX_CONNECTIONS}'."
 [[ "$max_conn" =~ ^[0-9]+$ && "$max_conn" -ge 1 ]] || die "VARNISH_MAX_CONNECTIONS blev '${max_conn}', men måste vara minst 1."
@@ -82,7 +82,8 @@ else
     envsubst '${QGSRV_SERVER_HTTP_PORT} ${VARNISH_BACKEND_TIMEOUT} ${VARNISH_MAX_CONNECTIONS}
               ${VARNISH_PROBE_URL} ${VARNISH_BAN_HOST} ${VARNISH_STRIP_PARAMS}
               ${VARNISH_FORCE_HTTPS} ${VARNISH_URL_PREFIX} ${VARNISH_CACHE_REQUESTS}
-              ${VARNISH_DEFAULT_TTL} ${VARNISH_MAX_RESTARTS} ${VARNISH_PROJECT_EXTENSION}
+              ${VARNISH_DEFAULT_TTL} ${VARNISH_MAX_RESTARTS} ${VARNISH_RETRY_MAX_AGE}
+              ${VARNISH_PROJECT_EXTENSION}
               ${VARNISH_ADMIN_B64}' \
         < /etc/varnish/default.vcl.template > "$VCL"
     # Filen kan innehålla inloggningsuppgifter. Varnish läser den som användaren "varnish",
