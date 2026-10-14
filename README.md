@@ -206,12 +206,12 @@ QGIS Server kan bara rita lika många bilder samtidigt som det finns workers
 (`QGSRV_SERVER_WORKERS`). Anrop utöver det väntar i en kö hos QGIS Server tills en
 worker blir ledig. `VARNISH_MAX_CONNECTIONS` avgör hur stor den kön får bli:
 
-- **Standard** är `QGSRV_SERVER_WORKERS` × 10. Med 4 workers blir det 40 samtidiga
-  anrop: 4 som ritas just nu och upp till 36 som väntar, alltså en kö på ungefär
-  10 anrop per worker.
+- **Standard** är `QGSRV_SERVER_WORKERS` × 20. Med 4 workers blir det 80 samtidiga
+  anrop: 4 som ritas just nu och upp till 76 som väntar, alltså en kö på ungefär
+  20 anrop per worker.
 - **När taket är nått** köar Varnish inte längre. Nästa anrop får direkt felet
-  **503** (Varnish försöker först igen enligt `VARNISH_MAX_RETRIES`, men är det fortfarande fullt
-  så får användaren ett 503).
+  **503** (Varnish försöker först igen enligt `VARNISH_MAX_RETRIES` och `VARNISH_MAX_RESTARTS`, men är det
+  fortfarande fullt så får användaren ett 503).
 - **För lågt värde** (nära antalet workers) ger alltså 503 redan vid måttliga
   belastningstoppar. **För högt värde** ger långa köer: användare väntar länge, och
   anrop kan hinna ge timeout (`VARNISH_BACKEND_TIMEOUT`) innan de ens börjar ritas. Då är det
@@ -222,7 +222,7 @@ Värdet kan skrivas som ett tal eller som ett uttryck med variabelnamn:
 
 ```bash
 docker run ... -e VARNISH_MAX_CONNECTIONS=200 ...
-docker run ... -e 'VARNISH_MAX_CONNECTIONS=QGSRV_SERVER_WORKERS*20' ...
+docker run ... -e 'VARNISH_MAX_CONNECTIONS=QGSRV_SERVER_WORKERS*30' ...
 ```
 
 Skriv variabelnamnet **utan** `$` (med `$` fungerar det också, men då måste skalet inte
@@ -243,9 +243,13 @@ expandera det – använd enkelcitat i `docker run`, och `$$` i en compose-fil).
   webbadressen för att cacha 300 sekunder (högst 90000), eller `&ttl=0` för ingen cache alls.
   Samma sak går att styra med headern `ttl: 300`. Står ttl i både URL och header gäller URL:en.
   `ttl=300` i URL:en och `ttl: 300` som header delar cacheobjekt; olika ttl-värden ger olika objekt.
-  Parametern ttl skickas inte vidare till QGIS Server.
+  Parametern ttl skickas inte vidare till QGIS Server. Ogiltiga värden i headern ignoreras, och
+  inledande nollor tas bort (`ttl=0030` är samma sak som `ttl=30`, och `ttl=00` samma som `ttl=0`).
 - Svarar QGIS Server med 503/504 gör Varnish först `VARNISH_MAX_RETRIES` nya försök och därefter
-  `VARNISH_MAX_RESTARTS` omstarter av anropet. Omstart görs bara för `GET`/`HEAD`; ett misslyckat
+  `VARNISH_MAX_RESTARTS` omstarter av anropet. Det gäller bara snabba fel: har anropet redan väntat
+  `VARNISH_RETRY_MAX_AGE` sekunder (standard 10), t.ex. på en timeout, görs inga fler försök och felet
+  levereras direkt. Annars skulle en långsam kartbild som alltid timear ut belasta QGIS Server 3-6 gånger
+  (upp till 6-12 minuter med 120 s timeout). Omstart görs dessutom bara för `GET`/`HEAD`; ett misslyckat
   `POST` (t.ex. WFS-T) ger direkt 503 och upprepas aldrig.
 - Parametern `time` tas bort före cachning (typisk "cache-busting"-parameter). Ändra med `VARNISH_STRIP_PARAMS`.
 - Parametrarnas ordning spelar ingen roll: samma anrop i annan ordning delar cache.
@@ -301,8 +305,9 @@ Sätts med `-e NAMN=värde` (docker run) eller under `environment:` (compose).
 | `VARNISH_CACHE_SIZE` | `256m` | Cachens storlek i RAM (t.ex. `1g`). Låt containern få mer minne än så. |
 | `VARNISH_DEFAULT_TTL` | `60` | Sekunder ett svar cachas när anropet saknar `ttl`. |
 | `VARNISH_BACKEND_TIMEOUT` | `120` | Hur länge Varnish väntar på QGIS Server. `QGSRV_SERVER_TIMEOUT` blir 1 sekund mindre. |
-| `VARNISH_MAX_CONNECTIONS` | tomt | Max samtidiga anrop till QGIS Server. Tomt = `QGSRV_SERVER_WORKERS` × 10. |
-| `VARNISH_MAX_RETRIES` / `VARNISH_MAX_RESTARTS` | `2` / `1` | Antal nya försök vid 503/504. |
+| `VARNISH_MAX_CONNECTIONS` | tomt | Max samtidiga anrop till QGIS Server. Tomt = `QGSRV_SERVER_WORKERS` × 20. |
+| `VARNISH_MAX_RETRIES` / `VARNISH_MAX_RESTARTS` | `2` / `1` | Antal nya försök vid 503/504 (bara för snabba fel, se `VARNISH_RETRY_MAX_AGE`). |
+| `VARNISH_RETRY_MAX_AGE` | `10` | Retries och omstart av ett misslyckat anrop görs bara om anropet är yngre än så här många sekunder. Anrop som väntat längre (t.ex. på en timeout) ger felet direkt. `0` stänger av alla nya försök. |
 | `VARNISH_CACHE_REQUESTS` | `GetMap\|GetLegendGraphic` | Vilka `REQUEST`-typer som cachas (t.ex. `GetMap\|GetLegendGraphic\|GetTile`). |
 | `VARNISH_STRIP_PARAMS` | `time` | Parametrar som tas bort före cachning (`\|`-separerade, tomt = inga). |
 | `VARNISH_URL_PREFIX` | tomt | Prefix för snygga adresser, t.ex. `/kartor`. |
