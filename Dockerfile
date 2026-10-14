@@ -30,11 +30,15 @@ ENV VARNISH_PORT=8080 \
     VARNISH_DEFAULT_TTL=60 \
     # Hur länge (sekunder) Varnish väntar på QGIS Server. QGSRV_SERVER_TIMEOUT blir 1 sekund mindre.
     VARNISH_BACKEND_TIMEOUT=120 \
-    # Max antal samtidiga anrop till QGIS Server. Tomt = antal workers x 10.
+    # Max antal samtidiga anrop till QGIS Server. Tomt = antal workers x 20.
     VARNISH_MAX_CONNECTIONS="" \
     # Antal nya försök mot QGIS Server vid 503/504, samt antal omstarter av anropet.
     VARNISH_MAX_RETRIES=2 \
     VARNISH_MAX_RESTARTS=1 \
+    # Ett misslyckat anrop (503/504) försöks bara igen (både retries och omstart) om det är yngre än så här
+    # många sekunder. Anrop som redan väntat längre, t.ex. på en timeout, ger felet direkt. 10 s ryms 3 försök
+    # mot en backend som inte svarar alls (3 x 2 s).
+    VARNISH_RETRY_MAX_AGE=10 \
     # Vilka REQUEST-typer som cachas (GetCapabilities cachas alltid 60 s). Exempel: GetMap|GetLegendGraphic|GetTile
     VARNISH_CACHE_REQUESTS="GetMap|GetLegendGraphic" \
     # Parametrar som tas bort ur URL:en före cachning (|-separerade). Tomt = inga.
