@@ -128,6 +128,9 @@ sub vcl_recv {
     # 2. Normalisera URL:en (görs bara första gången, inte vid restart)
     # -------------------------------------------------------------------------
     if (req.restarts == 0) {
+        # Anropets starttid. Används i vcl_deliver och vcl_synth för att avgöra om ett misslyckat
+        # anrop gick snabbt nog att försöka igen. Sätts alltid här, så en header från klienten ignoreras.
+        set req.http.X-Fetch-Start = now;
         # Ta bort cache-busting-parametrar (standard: "time") så att de inte
         # ger separata cacheobjekt.
         if (req.url ~ "[\?&](${VARNISH_STRIP_PARAMS})=[^&]*") {
@@ -195,8 +198,12 @@ sub vcl_recv {
             if (req.http.ttl !~ "^[0-9]+$") {
                 # Ogiltigt värde i headern: ignorera.
                 unset req.http.ttl;
-            } else if (req.http.ttl ~ "^[0-9]{6,}$" || std.integer(req.http.ttl, 0) > 90000) {
-                set req.http.ttl = "90000";
+            } else {
+                # Ta bort inledande nollor: ttl=00 blir 0 (ingen cache) och ttl=0030 delar cache med ttl=30.
+                set req.http.ttl = regsub(req.http.ttl, "^0+(.)", "\1");
+                if (req.http.ttl ~ "^[0-9]{6,}$" || std.integer(req.http.ttl, 0) > 90000) {
+                    set req.http.ttl = "90000";
+                }
             }
         }
 
@@ -251,8 +258,11 @@ sub vcl_backend_response {
     set beresp.http.X-Qgis-Service-Url = bereq.http.X-Qgis-Service-Url;
     set beresp.http.X-Rewrite-Url = bereq.http.X-Rewrite-Url;
 
-    # Överbelastad/otillgänglig backend: försök igen (max VARNISH_MAX_RETRIES gånger).
-    if (beresp.status == 503 || beresp.status == 504) {
+    # Överbelastad/otillgänglig backend: försök igen (max VARNISH_MAX_RETRIES gånger), men bara om anropet
+    # fortfarande är nytt (inom VARNISH_RETRY_MAX_AGE sekunder från start). Har det redan väntat längre är
+    # QGIS Server troligen överbelastad, och fler försök skulle bara öka belastningen. Då levereras felet som det är.
+    if ((beresp.status == 503 || beresp.status == 504)
+        && now - std.time(bereq.http.X-Fetch-Start, now) < ${VARNISH_RETRY_MAX_AGE}s) {
         return (retry);
     }
     # 422 = fel i anropet, cacha inte.
@@ -312,7 +322,9 @@ sub vcl_backend_response {
 }
 
 sub vcl_backend_error {
-    if (beresp.status == 503 || beresp.status == 504) {
+    # Samma villkor som i vcl_backend_response: inga fler försök efter ett långsamt fel (t.ex. en timeout).
+    if ((beresp.status == 503 || beresp.status == 504)
+        && now - std.time(bereq.http.X-Fetch-Start, now) < ${VARNISH_RETRY_MAX_AGE}s) {
         return (retry);
     }
     # Se till att misslyckade anrop aldrig cachas.
@@ -333,7 +345,8 @@ sub vcl_deliver {
     # Försök en gång till vid 503/504. Måste vara lika med max_restarts (VARNISH_MAX_RESTARTS),
     # annars hamnar man på Varnish felsida "Guru Meditation". Bara GET/HEAD (se vcl_synth).
     if ((resp.status == 503 || resp.status == 504) && req.restarts < ${VARNISH_MAX_RESTARTS}
-        && req.method ~ "^(GET|HEAD)$") {
+        && req.method ~ "^(GET|HEAD)$"
+        && now - std.time(req.http.X-Fetch-Start, now) < ${VARNISH_RETRY_MAX_AGE}s) {
         return (restart);
     }
     unset resp.http.X-Qgis-Service-Url;
@@ -349,8 +362,12 @@ sub vcl_synth {
     # Bara GET/HEAD startas om: en POST (t.ex. WFS-T) har redan skickat sin body, och Varnish
     # kan inte skicka den igen. En restart skulle ge en POST med Content-Length men utan body,
     # så anropet hänger tills backend eller Varnish ger upp.
+    # Bara om anropet misslyckades snabbt (inom VARNISH_RETRY_MAX_AGE sekunder räknat från start).
+    # Ett anrop som i stället väntat ut en timeout (VARNISH_BACKEND_TIMEOUT) startas inte om, eftersom
+    # det skulle fördubbla belastningen på en redan hårt belastad QGIS Server.
     if ((resp.status == 503 || resp.status == 504) && req.restarts < ${VARNISH_MAX_RESTARTS}
-        && req.method ~ "^(GET|HEAD)$") {
+        && req.method ~ "^(GET|HEAD)$"
+        && now - std.time(req.http.X-Fetch-Start, now) < ${VARNISH_RETRY_MAX_AGE}s) {
         return (restart);
     }
 
