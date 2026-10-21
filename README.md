@@ -69,6 +69,8 @@ vid varje ändring av koden och är öppen att hämta utan inloggning. Alla vers
 | `latest` | Senaste bygget. Bra för att prova. |
 | `3.44.14` (och andra versionsnummer) | Senaste bygget som bygger på just den versionen av QGIS Server. Använd en sådan tagg i drift, så att du själv väljer när du byter QGIS-version. |
 | `sha-<kod>` | Ett exakt bygge som aldrig ändras. Taggarna finns på paketsidan. |
+| `slim`, `3.44.14-slim`, `sha-<kod>-slim` | Mindre variant byggd från grenen `slim`. |
+| `ultra-slim`, `3.44.14-ultra-slim`, `sha-<kod>-ultra-slim` | Minsta varianten, byggd från grenen `ultra-slim` (utan `scipy`, `sympy`, `matplotlib`, `plotly` och cpt-city). |
 
 Exempel: `docker run ... ghcr.io/kristianstad/qgisserver_varnish:3.44.14`
 

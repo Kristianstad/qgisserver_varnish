@@ -2,13 +2,15 @@
 #
 #   Pull request          -> bygger och testar (publicerar inte)
 #   Push till main        -> bygger, testar och publicerar  :latest, :<QGIS-version>, :sha-<commit>
+#   Push till slim / ultra-slim -> som main, men variantnamnet ingår i taggarna:
+#                            :<variant>, :<QGIS-version>-<variant>, :sha-<commit>-<variant>
 #   Git-tagg (t.ex. 3.44.14-r1) -> bygger, testar och publicerar  :<taggen>
-#   Manuellt (Actions-fliken)   -> som push till main; valfri QGIS-version kan anges
+#   Manuellt (Actions-fliken)   -> som push till grenen körningen startas på; valfri QGIS-version kan anges
 name: Bygg avbild
 
 on:
   push:
-    branches: [main]
+    branches: [main, slim, ultra-slim]
     tags: ['*']
     paths-ignore:
       - README.md
@@ -64,15 +66,30 @@ jobs:
       - name: Förbered Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # Bygger man från grenen slim eller ultra-slim ingår grenens namn i taggarna.
+      - name: Ta reda på avbildsvariant
+        id: variant
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/slim)       echo "name=slim" >> "$GITHUB_OUTPUT" ;;
+            refs/heads/ultra-slim) echo "name=ultra-slim" >> "$GITHUB_OUTPUT" ;;
+            *)                     echo "name=" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Skapa taggar och etiketter
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
+          # Utan variant: latest + versionen på standardgrenen. Med variant: variantnamnet och versionen med
+          # variantnamn som suffix. Taggar med tomt värde ("none") är avstängda via enable.
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ steps.qgis.outputs.version }},enable={{is_default_branch}}
-            type=sha
+            type=raw,value=${{ steps.variant.outputs.name || 'none' }},enable=${{ steps.variant.outputs.name != '' }}
+            type=raw,value=${{ steps.qgis.outputs.version }}-${{ steps.variant.outputs.name || 'none' }},enable=${{ steps.variant.outputs.name != '' }}
+            type=sha,enable=${{ steps.variant.outputs.name == '' }}
+            type=sha,suffix=-${{ steps.variant.outputs.name || 'none' }},enable=${{ steps.variant.outputs.name != '' }}
             type=ref,event=tag
           # Avbilden innehåller mer än våra egna filer (QGIS, Varnish, Ubuntu-paket m.m.).
           # Därför anger vi inte BSD-2-Clause som licens för hela avbilden.
