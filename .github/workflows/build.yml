@@ -154,6 +154,8 @@ jobs:
             || { echo "::error::LICENSE saknas i avbilden"; exit 1; }
           docker exec smoke test -u /usr/bin/Xvfb \
             || { echo "::error::Xvfb har tappat setuid-biten"; exit 1; }
+          docker exec smoke env QT_QPA_PLATFORM=offscreen python3 -c "import qgis.core, qgis.server, numpy" \
+            || { echo "::error::QGIS Python-moduler kan inte importeras"; exit 1; }
           echo "Alla röktester godkända"
 
       # Avbilden är utplattad, så basavbildens ENV följer inte med automatiskt: kontrollera att inget saknas.

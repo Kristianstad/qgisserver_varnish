@@ -41,6 +41,13 @@ RUN find /usr/share/doc ! -xtype d ! -name copyright ! -path /usr/share/doc/qgis
          -regex '.*/lib(asan|tsan|ubsan|lsan|hwasan)(_preinit)?\.(so|a|o).*' -delete \
     && rm -rf /root/.cache /var/cache/debconf/* /tmp/*
 
+# Bibliotek som bara QGIS Desktop-delarna (Processing-diagram, symbologi-bibliotek) använder.
+# OBS: serverplugin som importerar scipy, sympy, matplotlib eller plotly fungerar inte i den här avbilden.
+RUN cd /usr/lib/python3/dist-packages \
+    && rm -rf plotly plotly-* _plotly_future_ _plotly_utils scipy scipy-* sympy sympy-* isympy.py \
+              mpmath mpmath-* matplotlib matplotlib-* mpl_toolkits \
+    && rm -rf /etc/matplotlibrc /usr/share/matplotlib /usr/share/python3-plotly /usr/share/menu/python3-sympy \
+              /usr/share/qgis/resources/cpt-city-qgis-min
 # =============================================================================
 # Slutsteg: ett enda lager. Basavbildens inställningar (ENV m.m.) följer inte med vid
 # kopieringen och anges därför här. Samma värden som i 3liz/qgis-map-server.
