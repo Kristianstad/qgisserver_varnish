@@ -93,12 +93,26 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
 
+      # Samma bygge utan utplattning (bara steget "build"), som jämförelse för storlekskontrollen.
+      - name: Bygg lagerversionen för storleksjämförelse
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: build
+          load: true
+          push: false
+          tags: qgis-varnish:layered
+          build-args: |
+            QGIS_SERVER_VERSION=${{ steps.qgis.outputs.version }}
+          cache-from: type=gha
+          provenance: false
+
       - name: Röktest - starta containern
         run: |
-          # Tom projektmapp som QGIS Server-användaren (uid 9001) får läsa.
-          mkdir -p smoke-data && chmod 777 smoke-data
-          docker run -d --name smoke \
-            -v "$PWD/smoke-data:/qgis-data:ro" \
+          # Testprojektet ska kunna läsas av QGIS Server-användaren (uid 9001).
+          chmod -R a+rX tests/smoke
+          docker run -d --name smoke -p 8080:8080 \
+            -v "$PWD/tests/smoke:/qgis-data:ro" \
             -e VARNISH_ADMIN_USER=admin \
             -e VARNISH_ADMIN_PASSWORD=testlosenord123 \
             qgis-varnish:test
@@ -138,13 +152,103 @@ jobs:
             || { echo "::error::Adminsidan går inte att logga in på"; exit 1; }
           docker exec smoke test -f /usr/share/doc/qgis-varnish/LICENSE \
             || { echo "::error::LICENSE saknas i avbilden"; exit 1; }
+          docker exec smoke test -u /usr/bin/Xvfb \
+            || { echo "::error::Xvfb har tappat setuid-biten"; exit 1; }
           echo "Alla röktester godkända"
+
+      # Avbilden är utplattad, så basavbildens ENV följer inte med automatiskt: kontrollera att inget saknas.
+      - name: Kontrollera att basavbildens miljövariabler finns kvar
+        run: |
+          base=3liz/qgis-map-server:${{ steps.qgis.outputs.version }}
+          docker pull -q "$base"
+          env_of() { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" | sort; }
+          missing=$(comm -23 <(env_of "$base") <(env_of qgis-varnish:test))
+          if [ -n "$missing" ]; then
+            echo "::error::Dessa ENV från basavbilden saknas i Dockerfile (slutsteget):"
+            echo "$missing"
+            exit 1
+          fi
+
+      # Samma anrop mot den orörda basavbilden och mot vår avbild (via Varnish) ska ge samma bild.
+      - name: Röktest - rendera testprojektet och jämför med basavbilden
+        run: |
+          set -e
+          docker run -d --name ref -p 18080:8080 \
+            -v "$PWD/tests/smoke:/qgis-data:ro" \
+            3liz/qgis-map-server:${{ steps.qgis.outputs.version }}
+          for i in $(seq 1 60); do
+            curl -fs -o /dev/null http://127.0.0.1:18080/ping && break
+            sleep 2
+          done
+          curl -fs -o /dev/null http://127.0.0.1:18080/ping \
+            || { echo "::error::Basavbilden svarade inte"; exit 1; }
+
+          q="/ows/?MAP=smoke.qgs&SERVICE=WMS"
+          map="&VERSION=1.1.1&REQUEST=GetMap&LAYERS=data&STYLES=&SRS=EPSG:3006&BBOX=300000,6100000,900000,6800000&WIDTH=400&HEIGHT=400&FORMAT=image/png"
+          legend="&VERSION=1.3.0&REQUEST=GetLegendGraphic&LAYER=data&FORMAT=image/png"
+          caps="&VERSION=1.3.0&REQUEST=GetCapabilities"
+
+          # fetch <port> <fråga> <fil> [png]: hämtar och kontrollerar status (och PNG-typ).
+          fetch() {
+            type=$(curl -sS -o "$3" -w '%{http_code} %{content_type}' "http://127.0.0.1:$1$q$2")
+            case "$type" in
+              "200 image/png"*) ;;
+              "200 "*)
+                if [ "${4:-}" = png ]; then echo "::error::Fel typ ($type) för $2"; exit 1; fi ;;
+              *) echo "::error::$type för $2"; cat "$3"; exit 1 ;;
+            esac
+          }
+          hits() { docker exec smoke varnishstat -1 -f MAIN.cache_hit | awk '{print $2}'; }
+
+          before=$(hits)
+          for part in map legend; do
+            fetch 8080 "${!part}" "new-$part.png" png
+            fetch 18080 "${!part}" "ref-$part.png" png
+            cmp "new-$part.png" "ref-$part.png" \
+              || { echo "::error::$part skiljer sig från basavbildens svar"; exit 1; }
+          done
+          # Bilden ska inte vara tom: en tom 400x400-bild blir mycket liten.
+          [ "$(stat -c %s new-map.png)" -gt 2000 ] \
+            || { echo "::error::GetMap gav en (nästan) tom bild"; exit 1; }
+
+          # Andra anropet ska komma från Varnish-cachen.
+          fetch 8080 "$map" again.png png
+          [ "$(hits)" -gt "$before" ] \
+            || { echo "::error::Andra GetMap kom inte från cachen"; exit 1; }
+
+          # GetCapabilities: attributens ordning i XML:en varierar mellan körningar, så jämför lager och CRS.
+          fetch 8080 "$caps" new-caps.xml
+          fetch 18080 "$caps" ref-caps.xml
+          names() { grep -oE '<(Name|CRS)>[^<]*</(Name|CRS)>' "$1" | sort; }
+          diff <(names new-caps.xml) <(names ref-caps.xml) \
+            || { echo "::error::GetCapabilities skiljer sig från basavbildens"; exit 1; }
+          grep -q '<Name>data</Name>' new-caps.xml \
+            || { echo "::error::Lagret saknas i GetCapabilities"; exit 1; }
+          echo "Testprojektet renderas likadant som i basavbilden"
+
+      # Utplattningen ska göra avbilden märkbart mindre än samma bygge i lager (komprimerad storlek, som vid hämtning).
+      - name: Kontrollera avbildens storlek
+        run: |
+          size() { docker save "$1" | gzip -6 | wc -c; }
+          layered=$(size qgis-varnish:layered)
+          flat=$(size qgis-varnish:test)
+          mb() { echo $(( $1 / 1048576 )); }
+          {
+            echo "### Komprimerad avbildsstorlek"
+            echo "| Avbild | MiB |"
+            echo "|---|---|"
+            echo "| I lager (utan utplattning) | $(mb "$layered") |"
+            echo "| Utplattad (publiceras) | $(mb "$flat") |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          # Kräv minst 10 % minskning.
+          [ $(( flat * 10 )) -lt $(( layered * 9 )) ] \
+            || { echo "::error::Utplattad avbild är inte minst 10 % mindre"; exit 1; }
 
       - name: Visa containerns logg
         if: always()
         run: |
           docker logs smoke 2>&1 | tail -n 100 || true
-          docker rm -f smoke >/dev/null 2>&1 || true
+          docker rm -f smoke ref >/dev/null 2>&1 || true
 
       # Steg 2: publicera (bara vid push, tagg eller manuell körning - aldrig för pull requests).
       # Bygget använder cachen från steg 1, så det går snabbt.

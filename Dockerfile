@@ -6,12 +6,13 @@
 #
 # Bygg:  docker build -t qgis-varnish .
 # Se README.md för hur man kör och testar.
+#
+# Avbilden byggs i två steg. Steg "build" installerar Varnish och städar bort filer som
+# inte behövs. Slutsteget kopierar sedan hela filsystemet till ETT lager, eftersom filer som
+# tas bort i ett senare lager annars ändå ligger kvar i basavbildens lager.
 # =============================================================================
 ARG QGIS_SERVER_VERSION=3.44.14
-FROM 3liz/qgis-map-server:${QGIS_SERVER_VERSION}
-
-LABEL org.opencontainers.image.title="QGIS Server med Varnish" \
-      org.opencontainers.image.description="3liz/qgis-map-server med Varnish Cache framför"
+FROM 3liz/qgis-map-server:${QGIS_SERVER_VERSION} AS build
 
 # --- Installera Varnish -------------------------------------------------------
 # gettext-base: ger kommandot envsubst (fyller i miljövariabler i VCL-mallen)
@@ -19,6 +20,43 @@ LABEL org.opencontainers.image.title="QGIS Server med Varnish" \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends varnish gettext-base curl \
     && rm -rf /var/lib/apt/lists/*
+
+# --- Filer ------------------------------------------------------------------
+COPY default.vcl.template /etc/varnish/default.vcl.template
+# Licenstexten för filerna i det här repot (BSD-2-Clause kräver att den följer med i binär form).
+COPY LICENSE /usr/share/doc/qgis-varnish/LICENSE
+COPY start.sh /usr/local/bin/start.sh
+# Tar bort ev. Windows-radslut (CRLF) så att skripten fungerar även om filerna
+# checkats ut på Windows, och gör startskriptet körbart.
+RUN sed -i 's/\r$//' /usr/local/bin/start.sh /etc/varnish/default.vcl.template \
+    && chmod 755 /usr/local/bin/start.sh
+
+# --- Städa --------------------------------------------------------------------
+# Dokumentation (utom licenstexterna), testkataloger i Python-paketen, sanitizer-bibliotek
+# (används bara med -fsanitize) och cacher. gcc:s lto1 måste vara kvar: länkningen av VCL kör den.
+RUN find /usr/share/doc ! -xtype d ! -name copyright ! -path /usr/share/doc/qgis-varnish/LICENSE -delete \
+    && find /usr/share/doc -xdev -type d -empty -delete \
+    && find /usr/lib/python3/dist-packages /opt/local -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + \
+    && find /usr/lib/x86_64-linux-gnu /usr/lib/gcc -regextype posix-extended \
+         -regex '.*/lib(asan|tsan|ubsan|lsan|hwasan)(_preinit)?\.(so|a|o).*' -delete \
+    && rm -rf /root/.cache /var/cache/debconf/* /tmp/*
+
+# =============================================================================
+# Slutsteg: ett enda lager. Basavbildens inställningar (ENV m.m.) följer inte med vid
+# kopieringen och anges därför här. Samma värden som i 3liz/qgis-map-server.
+# =============================================================================
+FROM scratch
+COPY --from=build / /
+
+LABEL org.opencontainers.image.title="QGIS Server med Varnish" \
+      org.opencontainers.image.description="3liz/qgis-map-server med Varnish Cache framför" \
+      org.opencontainers.image.base.name="docker.io/3liz/qgis-map-server"
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C.UTF-8 \
+    QGIS_DISABLE_MESSAGE_HOOKS=1 \
+    QGIS_NO_OVERRIDE_IMPORT=1 \
+    QGSRV_DATA_PATH=/usr/local/share/qgis-server
 
 # --- Inställningar (ändras med -e NAMN=värde eller under "environment:" i compose) --
 
@@ -69,16 +107,6 @@ ENV QGSRV_SERVER_HTTP_PORT=8081 \
     QGSRV_SERVER_WORKERS=2
 # Fler inställningar (t.ex. QGSRV_CACHE_SIZE = antal projekt som hålls i minnet)
 # finns i dokumentationen för py-qgis-server. QGIS-projekten läggs i /qgis-data.
-
-# --- Filer ------------------------------------------------------------------
-COPY default.vcl.template /etc/varnish/default.vcl.template
-# Licenstexten för filerna i det här repot (BSD-2-Clause kräver att den följer med i binär form).
-COPY LICENSE /usr/share/doc/qgis-varnish/LICENSE
-COPY start.sh /usr/local/bin/start.sh
-# Tar bort ev. Windows-radslut (CRLF) så att skripten fungerar även om filerna
-# checkats ut på Windows, och gör startskriptet körbart.
-RUN sed -i 's/\r$//' /usr/local/bin/start.sh /etc/varnish/default.vcl.template \
-    && chmod 755 /usr/local/bin/start.sh
 
 EXPOSE 8080
 

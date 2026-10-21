@@ -85,6 +85,7 @@ Med compose: `docker compose pull && docker compose up -d`
 **Bra att veta:**
 
 - Avbilden byggs bara för `amd64` (vanliga Intel/AMD-datorer). På ARM, t.ex. Mac med M-chip, kan den köras via emulering i Docker Desktop, men det kan bli långsamt.
+- Avbilden är gjord för att vara liten: den är utplattad till ett enda lager och saknar bland annat dokumentation (utom licenstexterna) och testfiler i Python-paketen. QGIS Server och Varnish fungerar som i övrigt, men avbilden delar inga lager med `3liz/qgis-map-server`.
 - Vill du ändra något i avbilden eller bygga den själv, se nedan.
 
 ### Bygga avbilden själv (valfritt)
