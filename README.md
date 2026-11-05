@@ -72,7 +72,7 @@ vid varje ändring av koden och är öppen att hämta utan inloggning. Alla vers
 | `slim`, `3.44.15-slim`, `sha-<kod>-slim` | Enplattad variant utan dokumentation utöver licenstexter, Python-testkataloger och byggcacher. |
 | `ultra-slim`, `3.44.15-ultra-slim`, `sha-<kod>-ultra-slim` | Slim-varianten utan `scipy`, `sympy`, `matplotlib`, `plotly` och cpt-city-färgramper. |
 
-Alla tre varianter byggs och testas från samma `main`-commit med separata Dockerfile-targets.
+Alla tre varianter byggs och testas från samma `main`-commit med separata Dockerfile-targets. Varnish-bygget använder motsvarande image från [Kristianstad/qgisserver](https://github.com/Kristianstad/qgisserver) som bas. Vid en QGIS-versionsuppgradering publiceras `qgisserver`-images först och Varnish-images därefter.
 
 Exempel: `docker run ... ghcr.io/kristianstad/qgisserver_varnish:3.44.15`
 

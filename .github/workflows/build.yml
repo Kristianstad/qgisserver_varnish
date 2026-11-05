@@ -35,7 +35,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [standard, slim, ultra-slim]
+        include:
+          - variant: standard
+            qgis_suffix: ''
+          - variant: slim
+            qgis_suffix: '-slim'
+          - variant: ultra-slim
+            qgis_suffix: '-ultra-slim'
 
     steps:
       - name: Checkout
@@ -58,6 +64,11 @@ jobs:
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Verify QGIS Server base image is published
+        run: |
+          base=ghcr.io/kristianstad/qgisserver:${{ steps.qgis.outputs.version }}${{ matrix.qgis_suffix }}
+          docker pull -q "$base"
 
       - name: Create image tags
         id: meta
@@ -90,22 +101,9 @@ jobs:
           tags: qgis-varnish:test-${{ matrix.variant }}
           build-args: |
             QGIS_SERVER_VERSION=${{ steps.qgis.outputs.version }}
+            QGIS_SERVER_BASE=ghcr.io/kristianstad/qgisserver:${{ steps.qgis.outputs.version }}${{ matrix.qgis_suffix }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,scope=${{ matrix.variant }},mode=max
-          provenance: false
-
-      - name: Build full image for size comparison
-        if: matrix.variant != 'standard'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: full
-          load: true
-          push: false
-          tags: qgis-varnish:full
-          build-args: |
-            QGIS_SERVER_VERSION=${{ steps.qgis.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
           provenance: false
 
       - name: Start QGIS Server and Varnish
@@ -181,7 +179,7 @@ jobs:
       - name: Verify inherited environment
         if: matrix.variant != 'standard'
         run: |
-          base=3liz/qgis-map-server:${{ steps.qgis.outputs.version }}
+          base=ghcr.io/kristianstad/qgisserver:${{ steps.qgis.outputs.version }}${{ matrix.qgis_suffix }}
           docker pull -q "$base"
           env_of() { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" | sort; }
           missing=$(comm -23 <(env_of "$base") <(env_of qgis-varnish:test-${{ matrix.variant }}))
@@ -190,15 +188,6 @@ jobs:
             echo "$missing"
             exit 1
           fi
-
-      - name: Check compressed image size
-        if: matrix.variant != 'standard'
-        run: |
-          size() { docker save "$1" | gzip -6 | wc -c; }
-          full=$(size qgis-varnish:full)
-          variant=$(size qgis-varnish:test-${{ matrix.variant }})
-          echo "${{ matrix.variant }}: $((variant / 1048576)) MiB (full: $((full / 1048576)) MiB)" | tee -a "$GITHUB_STEP_SUMMARY"
-          [ $((variant * 10)) -lt $((full * 9)) ]
 
       - name: Show logs and clean up
         if: always()
@@ -225,5 +214,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             QGIS_SERVER_VERSION=${{ steps.qgis.outputs.version }}
+            QGIS_SERVER_BASE=ghcr.io/kristianstad/qgisserver:${{ steps.qgis.outputs.version }}${{ matrix.qgis_suffix }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           provenance: false
