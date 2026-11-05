@@ -67,10 +67,14 @@ vid varje ändring av koden och är öppen att hämta utan inloggning. Alla vers
 | Tagg | Betydelse |
 |---|---|
 | `latest` | Senaste bygget. Bra för att prova. |
-| `3.44.14` (och andra versionsnummer) | Senaste bygget som bygger på just den versionen av QGIS Server. Använd en sådan tagg i drift, så att du själv väljer när du byter QGIS-version. |
+| `3.44.15` (och andra versionsnummer) | Senaste bygget som bygger på just den versionen av QGIS Server. Använd en sådan tagg i drift, så att du själv väljer när du byter QGIS-version. |
 | `sha-<kod>` | Ett exakt bygge som aldrig ändras. Taggarna finns på paketsidan. |
+| `slim`, `3.44.15-slim`, `sha-<kod>-slim` | Enplattad variant utan dokumentation utöver licenstexter, Python-testkataloger och byggcacher. |
+| `ultra-slim`, `3.44.15-ultra-slim`, `sha-<kod>-ultra-slim` | Slim-varianten utan `scipy`, `sympy`, `matplotlib`, `plotly` och cpt-city-färgramper. |
 
-Exempel: `docker run ... ghcr.io/kristianstad/qgisserver_varnish:3.44.14`
+Alla tre varianter byggs och testas från samma `main`-commit med separata Dockerfile-targets.
+
+Exempel: `docker run ... ghcr.io/kristianstad/qgisserver_varnish:3.44.15`
 
 **Uppdatera till senaste bygget** (projekten ligger kvar, eftersom de ligger i din egen mapp):
 
@@ -94,6 +98,13 @@ Hämta filerna från det här repot (*Code* → *Download ZIP*, eller `git clone
 ```bash
 docker build -t qgis-varnish .
 docker run -d --name kartor -p 8080:8080 -v "$PWD/projekt:/qgis-data" qgis-varnish
+```
+
+De mindre varianterna byggs från samma Dockerfile:
+
+```bash
+docker build --target slim -t qgis-varnish:slim .
+docker build --target ultra-slim -t qgis-varnish:ultra-slim .
 ```
 
 Med compose: ta bort raden `image:` i `docker-compose.yml`, ta bort `#` framför `build: .` och kör `docker compose up --build`.

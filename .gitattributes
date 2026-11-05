@@ -3,6 +3,8 @@
 * text=auto
 *.sh text eol=lf
 *.template text eol=lf
+*.qgs text eol=lf
+*.geojson text eol=lf
 Dockerfile text eol=lf
 *.yml text eol=lf
 *.md text eol=lf

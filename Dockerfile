@@ -8,7 +8,7 @@
 # Se README.md för hur man kör och testar.
 # =============================================================================
 ARG QGIS_SERVER_VERSION=3.44.15
-FROM 3liz/qgis-map-server:${QGIS_SERVER_VERSION}
+FROM 3liz/qgis-map-server:${QGIS_SERVER_VERSION} AS full
 
 LABEL org.opencontainers.image.title="QGIS Server med Varnish" \
       org.opencontainers.image.description="3liz/qgis-map-server med Varnish Cache framför"
@@ -89,3 +89,92 @@ HEALTHCHECK --interval=30s --timeout=15s --start-period=90s --retries=3 \
 # vidare till basavbildens entrypoint.
 ENTRYPOINT ["/usr/local/bin/start.sh"]
 CMD ["qgisserver"]
+
+FROM full AS slim-root
+RUN find /usr/share/doc ! -xtype d ! -name copyright ! -path /usr/share/doc/qgis-varnish/LICENSE -delete \
+    && find /usr/share/doc -xdev -type d -empty -delete \
+    && find /usr/lib/python3/dist-packages /opt/local -type d \( -name tests -o -name test \) -prune -exec rm -rf {} + \
+    && rm -rf /root/.cache /var/cache/debconf/* /var/cache/apt/archives/* /var/lib/apt/lists/* /tmp/*
+
+FROM scratch AS slim
+COPY --from=slim-root / /
+LABEL org.opencontainers.image.title="QGIS Server med Varnish slim" \
+      org.opencontainers.image.description="Flattened 3liz QGIS Server with Varnish" \
+      org.opencontainers.image.base.name="docker.io/3liz/qgis-map-server"
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C.UTF-8 \
+    QGIS_DISABLE_MESSAGE_HOOKS=1 \
+    QGIS_NO_OVERRIDE_IMPORT=1 \
+    QGSRV_DATA_PATH=/usr/local/share/qgis-server \
+    VARNISH_PORT=8080 \
+    VARNISH_CACHE_SIZE=256m \
+    VARNISH_DEFAULT_TTL=60 \
+    VARNISH_BACKEND_TIMEOUT=120 \
+    VARNISH_MAX_CONNECTIONS= \
+    VARNISH_MAX_RETRIES=2 \
+    VARNISH_MAX_RESTARTS=1 \
+    VARNISH_RETRY_MAX_AGE=10 \
+    VARNISH_CACHE_REQUESTS="GetMap|GetLegendGraphic" \
+    VARNISH_STRIP_PARAMS=time \
+    VARNISH_FORCE_HTTPS=no \
+    VARNISH_URL_PREFIX= \
+    VARNISH_PROJECT_EXTENSION=qgs \
+    VARNISH_BAN_HOST= \
+    VARNISH_ADMIN_USER= \
+    VARNISH_ADMIN_PASSWORD= \
+    VARNISH_PROBE_URL=/ping \
+    VARNISH_EXTRA_OPTS="-p http_gzip_support=on -p thread_pools=2 -p thread_pool_min=200 -p thread_pool_max=800 -p thread_pool_timeout=300 -p tcp_keepalive_time=60 -p tcp_keepalive_intvl=5 -p tcp_keepalive_probes=3 -p vsl_reclen=1024" \
+    QGSRV_SERVER_HTTP_PORT=8081 \
+    QGSRV_SERVER_INTERFACES=127.0.0.1 \
+    QGSRV_SERVER_WORKERS=2
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=15s --start-period=90s --retries=3 \
+    CMD curl -fs -o /dev/null --max-time 10 "http://127.0.0.1:${VARNISH_PORT}${VARNISH_PROBE_URL}" || exit 1
+ENTRYPOINT ["/usr/local/bin/start.sh"]
+CMD ["qgisserver"]
+
+FROM slim-root AS ultra-root
+RUN cd /usr/lib/python3/dist-packages \
+    && rm -rf plotly plotly-* _plotly_future_ _plotly_utils scipy scipy-* sympy sympy-* isympy.py \
+              mpmath mpmath-* matplotlib matplotlib-* mpl_toolkits \
+    && rm -rf /etc/matplotlibrc /usr/share/matplotlib /usr/share/python3-plotly /usr/share/menu/python3-sympy \
+              /usr/share/qgis/resources/cpt-city-qgis-min
+
+FROM scratch AS ultra-slim
+COPY --from=ultra-root / /
+LABEL org.opencontainers.image.title="QGIS Server med Varnish ultra-slim" \
+      org.opencontainers.image.description="Ultra-slim 3liz QGIS Server with Varnish" \
+      org.opencontainers.image.base.name="docker.io/3liz/qgis-map-server"
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    LC_ALL=C.UTF-8 \
+    QGIS_DISABLE_MESSAGE_HOOKS=1 \
+    QGIS_NO_OVERRIDE_IMPORT=1 \
+    QGSRV_DATA_PATH=/usr/local/share/qgis-server \
+    VARNISH_PORT=8080 \
+    VARNISH_CACHE_SIZE=256m \
+    VARNISH_DEFAULT_TTL=60 \
+    VARNISH_BACKEND_TIMEOUT=120 \
+    VARNISH_MAX_CONNECTIONS= \
+    VARNISH_MAX_RETRIES=2 \
+    VARNISH_MAX_RESTARTS=1 \
+    VARNISH_RETRY_MAX_AGE=10 \
+    VARNISH_CACHE_REQUESTS="GetMap|GetLegendGraphic" \
+    VARNISH_STRIP_PARAMS=time \
+    VARNISH_FORCE_HTTPS=no \
+    VARNISH_URL_PREFIX= \
+    VARNISH_PROJECT_EXTENSION=qgs \
+    VARNISH_BAN_HOST= \
+    VARNISH_ADMIN_USER= \
+    VARNISH_ADMIN_PASSWORD= \
+    VARNISH_PROBE_URL=/ping \
+    VARNISH_EXTRA_OPTS="-p http_gzip_support=on -p thread_pools=2 -p thread_pool_min=200 -p thread_pool_max=800 -p thread_pool_timeout=300 -p tcp_keepalive_time=60 -p tcp_keepalive_intvl=5 -p tcp_keepalive_probes=3 -p vsl_reclen=1024" \
+    QGSRV_SERVER_HTTP_PORT=8081 \
+    QGSRV_SERVER_INTERFACES=127.0.0.1 \
+    QGSRV_SERVER_WORKERS=2
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=15s --start-period=90s --retries=3 \
+    CMD curl -fs -o /dev/null --max-time 10 "http://127.0.0.1:${VARNISH_PORT}${VARNISH_PROBE_URL}" || exit 1
+ENTRYPOINT ["/usr/local/bin/start.sh"]
+CMD ["qgisserver"]
+
+FROM full AS standard
